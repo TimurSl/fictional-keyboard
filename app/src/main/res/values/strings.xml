@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SGA Enchanting Keyboard</string>
+    <string name="ime_name">Клавиатура Зачарований (SGA)</string>
+    <string name="subtype_sga">Стол зачарований</string>
+</resources>
