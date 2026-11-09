@@ -8,12 +8,14 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -24,6 +26,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * The keyboard UI, styled after the Samsung keyboard: a round-button toolbar on top, a
+ * permanent number row, symbol hints in the corner of every letter key, and a bottom bar
+ * with voice input and a hide button.
+ */
 public class SgaKeyboardView extends LinearLayout {
 
     public interface OnKeyActionListener {
@@ -39,6 +46,12 @@ public class SgaKeyboardView extends LinearLayout {
         /** Currently selected text in the editor, or null. */
         String getSelectedText();
         String getTextBeforeCursor(int n);
+        /** Closes the keyboard (the chevron in the bottom bar). */
+        void onHideKeyboard();
+        /** Opens the keyboard settings screen. */
+        void onOpenSettings();
+        /** Switches to a voice input method; false when the device has none. */
+        boolean onVoiceInput();
     }
 
     private interface AltListener {
@@ -49,10 +62,29 @@ public class SgaKeyboardView extends LinearLayout {
         SGA_DIRECT,
         RU,
         EN,
-        SYMBOLS
+        SYMBOLS,
+        EMOJI
     }
 
+    // Palette sampled from the Samsung keyboard in dark mode.
+    private static final int C_BOARD = Color.parseColor("#0D0D0E");
+    private static final int C_TOOLBAR = Color.parseColor("#1C1C1D");
+    private static final int C_CIRCLE = Color.parseColor("#3A3A3C");
+    private static final int C_KEY = Color.parseColor("#2F2E2C");
+    private static final int C_KEY_FUNC = Color.parseColor("#201F1E");
+    private static final int C_TEXT = Color.parseColor("#F5F5F5");
+    private static final int C_HINT = Color.parseColor("#D9D9D9");
+    private static final int C_SUB = Color.parseColor("#8C8C8C");
+    private static final int C_ACCENT = Color.parseColor("#3E91FF");
+    private static final int C_PANEL = Color.parseColor("#1F1F20");
+
     private static final long LONG_PRESS_MS = 350;
+    private static final long CAPS_DOUBLE_TAP_MS = 400;
+
+    // Row geometry (dp), like the Samsung keyboard: tall keys with generous gaps.
+    private static final float H_NUMBER = 36f;
+    private static final float H_LETTER = 42f;
+    private static final float SIDE_W = 1.5f;
 
     private final OnKeyActionListener listener;
     private final Prefs prefs;
@@ -63,11 +95,16 @@ public class SgaKeyboardView extends LinearLayout {
     private LayoutType currentLayout = LayoutType.SGA_DIRECT;
     private LayoutType layoutBeforeSymbols = LayoutType.SGA_DIRECT;
     private boolean isShifted = false;
+    private boolean capsLock = false;
+    private long lastShiftTap = 0;
     private int symPage = 0;
+    private boolean modeStripOpen = false;
 
     private final StringBuilder composing = new StringBuilder();
 
-    private LinearLayout headerBar;
+    private LinearLayout toolbar;
+    private HorizontalScrollView modeStrip;
+    private LinearLayout modeRow;
     private LinearLayout keysContainer;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private Runnable repeatDeleteRunnable;
@@ -108,16 +145,32 @@ public class SgaKeyboardView extends LinearLayout {
         {"z", "x", "c", "v", "b", "n", "m"}
     };
 
+    /** Corner symbols on the Latin letters, exactly as on the Samsung keyboard. */
+    private static final String[][] HINT_ROWS = {
+        {"+", "×", "÷", "=", "/", "_", "<", ">", "[", "]"},
+        {"!", "@", "#", "%", "^", "&", "*", "(", ")"},
+        {"-", "'", "\"", ":", ";", ",", "?"}
+    };
+
+    private static final String[] DIGITS = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
+
     private static final String[][] SYM_ROWS = {
-        {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-        {"@", "#", "$", "%", "&", "*", "-", "+", "(", ")"},
-        {"!", "\"", "'", ":", ";", "/", "?", "~", "`"}
+        {"+", "×", "÷", "=", "/", "_", "<", ">", "[", "]"},
+        {"!", "@", "#", "$", "%", "^", "&", "*", "(", ")"},
+        {"-", "'", "\"", ":", ";", ",", "?"}
     };
 
     private static final String[][] SYM_ROWS_2 = {
-        {"[", "]", "{", "}", "<", ">", "=", "_", "\\", "|"},
-        {"^", "€", "£", "₽", "…", "«", "»", "¥", "°", "§"},
-        {"¿", "¡", "©", "®", "™", "¢", "¶", "•", "·"}
+        {"`", "~", "\\", "|", "{", "}", "€", "£", "¥", "₽"},
+        {"…", "«", "»", "§", "¶", "©", "®", "™", "¢", "°"},
+        {"¿", "¡", "•", "·", "†", "‡", "№"}
+    };
+
+    private static final String[][] EMOJI_ROWS = {
+        {"😀", "😂", "😊", "😍", "😘", "😎", "🤔", "😭"},
+        {"😡", "😴", "😱", "👍", "👎", "👏", "🙏", "💪"},
+        {"❤️", "🔥", "✨", "⭐", "🎉", "💀", "👀", "💯"},
+        {"😈", "👹", "👽", "🤖", "🌙", "⚔️", "⛏️"}
     };
 
     private static final String[] DOT_ALTERNATES = {",", "?", "!", "'", "\"", "-", ":"};
@@ -148,14 +201,14 @@ public class SgaKeyboardView extends LinearLayout {
         restoreState();
 
         setOrientation(VERTICAL);
-        setBackgroundColor(Color.parseColor("#18191C"));
-        int pad = dp(4);
-        setPadding(pad, pad, pad, dp(8));
+        setBackgroundColor(C_BOARD);
 
-        initHeader();
+        initToolbar();
+        initModeStrip();
         initDecodeStrip();
         initKeysContainer();
         renderKeyboard();
+        initBottomBar();
     }
 
     private void restoreState() {
@@ -167,7 +220,7 @@ public class SgaKeyboardView extends LinearLayout {
             String l = prefs.lastLayout();
             if (l != null) {
                 LayoutType t = LayoutType.valueOf(l);
-                if (t != LayoutType.SYMBOLS) currentLayout = t;
+                if (t != LayoutType.SYMBOLS && t != LayoutType.EMOJI) currentLayout = t;
             }
         } catch (IllegalArgumentException ignored) { }
         layoutBeforeSymbols = currentLayout;
@@ -192,57 +245,193 @@ public class SgaKeyboardView extends LinearLayout {
         composing.setLength(0);
     }
 
-    // ---- Header ----
+    // ---- Toolbar (round icon buttons, like the strip above the Samsung keys) ----
 
-    private void initHeader() {
-        HorizontalScrollView hsv = new HorizontalScrollView(getContext());
-        hsv.setHorizontalScrollBarEnabled(false);
-        hsv.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+    private void initToolbar() {
+        toolbar = new LinearLayout(getContext());
+        toolbar.setOrientation(HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setBackgroundColor(C_TOOLBAR);
+        toolbar.setPadding(dp(10), dp(6), dp(10), dp(6));
+        toolbar.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, dp(54)));
+        addView(toolbar);
+    }
 
-        headerBar = new LinearLayout(getContext());
-        headerBar.setOrientation(HORIZONTAL);
-        headerBar.setGravity(Gravity.CENTER_VERTICAL);
-        int pad = dp(4);
-        headerBar.setPadding(pad, pad, pad, pad);
+    private void initModeStrip() {
+        modeStrip = new HorizontalScrollView(getContext());
+        modeStrip.setHorizontalScrollBarEnabled(false);
+        modeStrip.setVisibility(GONE);
+        modeStrip.setBackgroundColor(C_TOOLBAR);
+        modeStrip.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
-        hsv.addView(headerBar);
-        addView(hsv);
+        modeRow = new LinearLayout(getContext());
+        modeRow.setOrientation(HORIZONTAL);
+        modeRow.setGravity(Gravity.CENTER_VERTICAL);
+        modeRow.setPadding(dp(10), 0, dp(10), dp(8));
+        modeStrip.addView(modeRow);
+        addView(modeStrip);
     }
 
     private void initKeysContainer() {
         keysContainer = new LinearLayout(getContext());
         keysContainer.setOrientation(VERTICAL);
+        keysContainer.setPadding(dp(4), dp(8), dp(4), 0);
         keysContainer.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(keysContainer);
     }
 
-    private TextView createChip(String text, int bgColor, int textColor, int leftMarginDp) {
-        TextView chip = new TextView(getContext());
-        chip.setText(text);
-        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        chip.setTypeface(Typeface.DEFAULT_BOLD);
-        chip.setGravity(Gravity.CENTER);
-        chip.setPadding(dp(10), dp(6), dp(10), dp(6));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dp(14));
-        bg.setColor(bgColor);
-        chip.setBackground(bg);
-        chip.setTextColor(textColor);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-            LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(leftMarginDp), 0, dp(3), 0);
-        chip.setLayoutParams(lp);
-        return chip;
+    /** Mic on the left, hide-keyboard chevron on the right, as in the Samsung bottom bar. */
+    private void initBottomBar() {
+        LinearLayout bar = new LinearLayout(getContext());
+        bar.setOrientation(HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, dp(40)));
+
+        bar.addView(bottomIcon(R.drawable.ic_mic, "Voice input", 26f, new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                feedback.key(Feedback.KeyType.SPECIAL);
+                flushComposing();
+                if (listener == null || !listener.onVoiceInput()) {
+                    Toast.makeText(getContext(), "No voice input method available", Toast.LENGTH_SHORT).show();
+                }
+            }
+        }));
+        View gap = new View(getContext());
+        gap.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 48f));
+        bar.addView(gap);
+        bar.addView(bottomIcon(R.drawable.ic_chevron_down, "Hide keyboard", 26f, new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                feedback.key(Feedback.KeyType.SPECIAL);
+                flushComposing();
+                if (listener != null) listener.onHideKeyboard();
+            }
+        }));
+        addView(bar);
     }
 
-    private void refreshHeader() {
-        headerBar.removeAllViews();
+    private View bottomIcon(int iconRes, String description, float sizeDp, OnClickListener click) {
+        FrameLayout cell = new FrameLayout(getContext());
+        cell.setLayoutParams(new LinearLayout.LayoutParams(0, LayoutParams.MATCH_PARENT, 26f));
+        cell.setContentDescription(description);
+        cell.setOnClickListener(click);
+        cell.addView(icon(iconRes, sizeDp));
+        return cell;
+    }
+
+    private ImageView icon(int res, float sizeDp) {
+        ImageView iv = new ImageView(getContext());
+        iv.setImageResource(res);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+        iv.setLayoutParams(new FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER));
+        return iv;
+    }
+
+    private View toolbarButton(int iconRes, String description, boolean active, OnClickListener click) {
+        FrameLayout b = new FrameLayout(getContext());
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(active ? C_ACCENT : C_CIRCLE);
+        b.setBackground(bg);
+        b.setContentDescription(description);
+        b.setOnClickListener(click);
+        b.addView(icon(iconRes, 22f));
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
+        return b;
+    }
+
+    private View toolbarSpacer() {
+        View v = new View(getContext());
+        v.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f));
+        return v;
+    }
+
+    private void refreshToolbar() {
+        toolbar.removeAllViews();
+
+        toolbar.addView(toolbarSpacer());
+        toolbar.addView(toolbarButton(R.drawable.ic_sparkle, "Mode: " + currentMode.label, modeStripOpen,
+            new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    feedback.key(Feedback.KeyType.SPECIAL);
+                    modeStripOpen = !modeStripOpen;
+                    refreshToolbar();
+                }
+            }));
+        toolbar.addView(toolbarSpacer());
+        toolbar.addView(toolbarButton(R.drawable.ic_emoji, "Emoji", currentLayout == LayoutType.EMOJI,
+            new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    feedback.key(Feedback.KeyType.SPECIAL);
+                    toggleEmoji();
+                }
+            }));
+        toolbar.addView(toolbarSpacer());
+        toolbar.addView(toolbarButton(R.drawable.ic_translate, "Switch layout: " + layoutName(baseLayout()), false,
+            new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    feedback.key(Feedback.KeyType.SPECIAL);
+                    flushComposing();
+                    LayoutType base = baseLayout();
+                    if (base == LayoutType.SGA_DIRECT) {
+                        base = LayoutType.RU;
+                    } else if (base == LayoutType.RU) {
+                        base = LayoutType.EN;
+                    } else {
+                        base = LayoutType.SGA_DIRECT;
+                    }
+                    currentLayout = base;
+                    layoutBeforeSymbols = base;
+                    prefs.setLastLayout(base.name());
+                    renderKeyboard();
+                }
+            }));
+        toolbar.addView(toolbarSpacer());
+        toolbar.addView(toolbarButton(R.drawable.ic_swap, "Decode text", decodeOpen, new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                feedback.key(Feedback.KeyType.SPECIAL);
+                setDecodeOpen(!decodeOpen);
+            }
+        }));
+        toolbar.addView(toolbarSpacer());
+        toolbar.addView(toolbarButton(R.drawable.ic_settings, "Settings", false, new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                feedback.key(Feedback.KeyType.SPECIAL);
+                flushComposing();
+                if (listener != null) listener.onOpenSettings();
+            }
+        }));
+        toolbar.addView(toolbarSpacer());
+
+        refreshModeStrip();
+    }
+
+    private void refreshModeStrip() {
+        modeStrip.setVisibility(modeStripOpen ? VISIBLE : GONE);
+        modeRow.removeAllViews();
+        if (!modeStripOpen) return;
 
         for (final Translators.Mode mode : Translators.Mode.values()) {
             boolean isCurrent = (mode == currentMode);
-            TextView chip = createChip(mode.title,
-                Color.parseColor(isCurrent ? "#4C8BF5" : "#2A2D34"),
-                isCurrent ? Color.WHITE : Color.parseColor("#A0A5B0"), 3);
+            TextView chip = new TextView(getContext());
+            chip.setText(mode.title);
+            chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            chip.setGravity(Gravity.CENTER);
+            chip.setSingleLine(true);
+            chip.setTextColor(isCurrent ? Color.WHITE : Color.parseColor("#C8C8C8"));
+            chip.setPadding(dp(14), 0, dp(14), 0);
+            chip.setBackground(rounded(isCurrent ? C_ACCENT : C_CIRCLE, 18));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LayoutParams.WRAP_CONTENT, dp(36));
+            lp.setMargins(dp(3), 0, dp(3), 0);
+            chip.setLayoutParams(lp);
             chip.setOnClickListener(new OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -250,53 +439,46 @@ public class SgaKeyboardView extends LinearLayout {
                     flushComposing();
                     currentMode = mode;
                     prefs.setLastMode(mode.name());
+                    modeStripOpen = false;
                     renderKeyboard();
                 }
             });
-            headerBar.addView(chip);
+            modeRow.addView(chip);
         }
+    }
 
-        String langLabel;
-        if (currentLayout == LayoutType.SGA_DIRECT) {
-            langLabel = "⌨ Руны";
-        } else if (currentLayout == LayoutType.RU) {
-            langLabel = "🌐 РУ";
-        } else if (currentLayout == LayoutType.EN) {
-            langLabel = "🌐 EN";
+    private void toggleEmoji() {
+        flushComposing();
+        if (currentLayout == LayoutType.EMOJI) {
+            currentLayout = layoutBeforeSymbols;
         } else {
-            langLabel = "123";
+            if (currentLayout != LayoutType.SYMBOLS) layoutBeforeSymbols = currentLayout;
+            currentLayout = LayoutType.EMOJI;
         }
-        TextView langChip = createChip(langLabel, Color.parseColor("#383E4A"), Color.parseColor("#76D4F5"), 8);
-        langChip.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                feedback.key(Feedback.KeyType.SPECIAL);
-                flushComposing();
-                if (currentLayout == LayoutType.SGA_DIRECT) {
-                    currentLayout = LayoutType.RU;
-                } else if (currentLayout == LayoutType.RU) {
-                    currentLayout = LayoutType.EN;
-                } else {
-                    currentLayout = LayoutType.SGA_DIRECT;
-                }
-                layoutBeforeSymbols = currentLayout;
-                prefs.setLastLayout(currentLayout.name());
-                renderKeyboard();
-            }
-        });
-        headerBar.addView(langChip);
+        renderKeyboard();
+    }
 
-        TextView decodeChip = createChip("⇄",
-            Color.parseColor(decodeOpen ? "#4C8BF5" : "#383E4A"),
-            decodeOpen ? Color.WHITE : Color.parseColor("#76D4F5"), 3);
-        decodeChip.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                feedback.key(Feedback.KeyType.SPECIAL);
-                setDecodeOpen(!decodeOpen);
-            }
-        });
-        headerBar.addView(decodeChip);
+    /** The text layout underneath the symbol/emoji panels. */
+    private LayoutType baseLayout() {
+        return (currentLayout == LayoutType.SYMBOLS || currentLayout == LayoutType.EMOJI)
+            ? layoutBeforeSymbols : currentLayout;
+    }
+
+    private static String layoutName(LayoutType t) {
+        switch (t) {
+            case RU: return "Русский";
+            case EN: return "English";
+            default: return "Galactic";
+        }
+    }
+
+    /** Space bar caption, the way the Samsung one shows "English (US)". */
+    private String spaceLabel() {
+        LayoutType base = baseLayout();
+        boolean glyphs = base == LayoutType.SGA_DIRECT && !currentMode.isWordLevel();
+        if (glyphs) return "Galactic (SGA)";
+        String lang = base == LayoutType.RU ? "Русский" : "English";
+        return currentMode == Translators.Mode.NORMAL ? lang : lang + " · " + currentMode.label;
     }
 
     // ---- Decode strip ----
@@ -305,33 +487,30 @@ public class SgaKeyboardView extends LinearLayout {
         decodeStrip = new LinearLayout(getContext());
         decodeStrip.setOrientation(VERTICAL);
         decodeStrip.setVisibility(GONE);
-        decodeStrip.setPadding(dp(10), dp(8), dp(10), dp(8));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#1E222A"));
-        bg.setCornerRadius(dp(8));
-        decodeStrip.setBackground(bg);
+        decodeStrip.setPadding(dp(12), dp(10), dp(12), dp(10));
+        decodeStrip.setBackground(rounded(C_PANEL, 12));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
             LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(4), dp(2), dp(4), dp(4));
+        lp.setMargins(dp(8), dp(8), dp(8), 0);
         decodeStrip.setLayoutParams(lp);
 
         decodeInfo = new TextView(getContext());
-        decodeInfo.setTextColor(Color.parseColor("#76D4F5"));
+        decodeInfo.setTextColor(Color.parseColor("#8DBBFF"));
         decodeInfo.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         decodeStrip.addView(decodeInfo);
 
         decodeOut = new TextView(getContext());
-        decodeOut.setTextColor(Color.WHITE);
+        decodeOut.setTextColor(C_TEXT);
         decodeOut.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         decodeOut.setMaxLines(3);
         decodeOut.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        decodeOut.setPadding(0, dp(4), 0, dp(6));
+        decodeOut.setPadding(0, dp(4), 0, dp(8));
         decodeStrip.addView(decodeOut);
 
         LinearLayout buttons = new LinearLayout(getContext());
         buttons.setOrientation(HORIZONTAL);
 
-        decodeTargetBtn = decodeButton("", "#383E4A", new OnClickListener() {
+        decodeTargetBtn = decodeButton("", C_CIRCLE, new OnClickListener() {
             @Override
             public void onClick(View v) {
                 Decoder.Target next;
@@ -346,7 +525,7 @@ public class SgaKeyboardView extends LinearLayout {
         });
         buttons.addView(decodeTargetBtn);
 
-        buttons.addView(decodeButton("Copy", "#383E4A", new OnClickListener() {
+        buttons.addView(decodeButton("Copy", C_CIRCLE, new OnClickListener() {
             @Override
             public void onClick(View v) {
                 ClipboardManager cm = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
@@ -357,7 +536,7 @@ public class SgaKeyboardView extends LinearLayout {
             }
         }));
 
-        decodeInsertBtn = decodeButton("Insert", "#3F69D6", new OnClickListener() {
+        decodeInsertBtn = decodeButton("Insert", C_ACCENT, new OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (!decodedText.isEmpty() && listener != null) {
@@ -369,7 +548,7 @@ public class SgaKeyboardView extends LinearLayout {
         });
         buttons.addView(decodeInsertBtn);
 
-        buttons.addView(decodeButton("Close", "#383E4A", new OnClickListener() {
+        buttons.addView(decodeButton("Close", C_CIRCLE, new OnClickListener() {
             @Override
             public void onClick(View v) {
                 setDecodeOpen(false);
@@ -380,19 +559,16 @@ public class SgaKeyboardView extends LinearLayout {
         addView(decodeStrip);
     }
 
-    private TextView decodeButton(String text, String color, OnClickListener click) {
+    private TextView decodeButton(String text, int color, OnClickListener click) {
         TextView b = new TextView(getContext());
         b.setText(text);
         b.setTextColor(Color.WHITE);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setGravity(Gravity.CENTER);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor(color));
-        bg.setCornerRadius(dp(8));
-        b.setBackground(bg);
+        b.setBackground(rounded(color, 18));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(38), 1f);
-        lp.setMargins(dp(2), 0, dp(2), 0);
+        lp.setMargins(dp(3), 0, dp(3), 0);
         b.setLayoutParams(lp);
         b.setOnClickListener(click);
         return b;
@@ -402,7 +578,7 @@ public class SgaKeyboardView extends LinearLayout {
         decodeOpen = open;
         decodeStrip.setVisibility(open ? VISIBLE : GONE);
         if (open) loadDecodeSource();
-        refreshHeader();
+        refreshToolbar();
     }
 
     /** Picks what to decode: selection, then clipboard, then text before the cursor. */
@@ -464,39 +640,58 @@ public class SgaKeyboardView extends LinearLayout {
     // ---- Rendering ----
 
     public void renderKeyboard() {
-        refreshHeader();
+        refreshToolbar();
         keysContainer.removeAllViews();
 
-        if (currentLayout == LayoutType.SYMBOLS) {
-            renderSymbolsLayout();
-        } else if (currentLayout == LayoutType.RU) {
-            renderTextLayout(RU_ROWS, null);
-        } else if (currentLayout == LayoutType.EN || currentMode.isWordLevel()) {
-            // Word-level modes need real letters, so the SGA glyph layout shows Latin keys.
-            renderTextLayout(EN_ROWS, null);
+        if (currentLayout == LayoutType.EMOJI) {
+            renderEmojiLayout();
         } else {
-            renderTextLayout(SGA_ROWS, SGA_SUB_LATIN);
+            renderNumberRow();
+            if (currentLayout == LayoutType.SYMBOLS) {
+                renderSymbolsLayout();
+            } else if (currentLayout == LayoutType.RU) {
+                renderTextLayout(RU_ROWS, null, null, 21);
+            } else if (currentLayout == LayoutType.EN || currentMode.isWordLevel()) {
+                // Word-level modes need real letters, so the SGA glyph layout shows Latin keys.
+                renderTextLayout(EN_ROWS, null, HINT_ROWS, 22);
+            } else {
+                renderTextLayout(SGA_ROWS, SGA_SUB_LATIN, HINT_ROWS, 20);
+            }
         }
 
         renderBottomRow();
     }
 
-    private boolean isGlyphLayout() {
-        return currentLayout == LayoutType.SGA_DIRECT && !currentMode.isWordLevel();
+    private void renderNumberRow() {
+        LinearLayout rowView = createRowLayout();
+        for (final String d : DIGITS) {
+            rowView.addView(createCharKey(d, null, null, 1.0f, H_NUMBER, 20, null, false,
+                new OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        typeText(d);
+                    }
+                }, null));
+        }
+        keysContainer.addView(rowView);
     }
 
-    private void renderTextLayout(String[][] rows, final String[][] subRows) {
+    private void renderTextLayout(String[][] rows, final String[][] subRows, String[][] hints, float textSp) {
         for (int r = 0; r < rows.length; r++) {
             LinearLayout rowView = createRowLayout();
             String[] rowKeys = rows[r];
+            // Shorter rows are centred (row 2) or flanked by shift/backspace (row 3).
+            float side = (rows[0].length - rowKeys.length) / 2f;
+
+            if (r == 1 && side > 0) rowView.addView(rowSpacer(side));
 
             if (r == 2) {
-                rowView.addView(createSpecialKey(isShifted ? "⬆" : "⇧", 1.4f, Color.parseColor("#343A45"),
-                    Feedback.KeyType.SPECIAL, new OnClickListener() {
+                int shiftIcon = capsLock ? R.drawable.ic_caps : (isShifted ? R.drawable.ic_shift_on : R.drawable.ic_shift);
+                rowView.addView(createFuncKey(null, shiftIcon, "Shift", side, C_KEY_FUNC,
+                    Feedback.KeyType.SPECIAL, H_LETTER, 0, new OnClickListener() {
                         @Override
                         public void onClick(View v) {
-                            isShifted = !isShifted;
-                            renderKeyboard();
+                            onShiftTap();
                         }
                     }, null));
             }
@@ -505,11 +700,11 @@ public class SgaKeyboardView extends LinearLayout {
                 final String rawKey = rowKeys[k];
                 final String sub = (subRows != null && r < subRows.length && k < subRows[r].length) ? subRows[r][k] : null;
                 final boolean glyph = subRows != null;
+                final String hint = (hints != null && r < hints.length && k < hints[r].length) ? hints[r][k] : null;
 
                 String displayKey = isShifted ? rawKey.toUpperCase() : rawKey;
-                String hint = (r == 0 && k < 10) ? String.valueOf((k + 1) % 10) : null;
 
-                // Alternates: digit first (top row), then layout-specific extras
+                // Long-press choices: the corner symbol first (release to type it), then extras.
                 List<String> alts = new ArrayList<>();
                 if (hint != null) alts.add(hint);
                 if (glyph) {
@@ -520,7 +715,7 @@ public class SgaKeyboardView extends LinearLayout {
                     if (extra != null) Collections.addAll(alts, extra);
                 }
 
-                View keyView = createCharKey(displayKey, sub, hint, 1.0f, alts, isShifted,
+                View keyView = createCharKey(displayKey, sub, hint, 1.0f, H_LETTER, textSp, alts, isShifted,
                     new OnClickListener() {
                         @Override
                         public void onClick(View v) {
@@ -536,12 +731,25 @@ public class SgaKeyboardView extends LinearLayout {
                 rowView.addView(keyView);
             }
 
-            if (r == 2) {
-                rowView.addView(createBackspaceKey(1.5f));
-            }
+            if (r == 1 && side > 0) rowView.addView(rowSpacer(side));
+            if (r == 2) rowView.addView(createBackspaceKey(side, H_LETTER));
 
             keysContainer.addView(rowView);
         }
+    }
+
+    private void onShiftTap() {
+        long now = SystemClock.uptimeMillis();
+        if (capsLock) {
+            capsLock = false;
+            isShifted = false;
+        } else if (isShifted && now - lastShiftTap < CAPS_DOUBLE_TAP_MS) {
+            capsLock = true; // double tap
+        } else {
+            isShifted = !isShifted;
+        }
+        lastShiftTap = now;
+        renderKeyboard();
     }
 
     private void renderSymbolsLayout() {
@@ -549,10 +757,11 @@ public class SgaKeyboardView extends LinearLayout {
         for (int r = 0; r < rows.length; r++) {
             LinearLayout rowView = createRowLayout();
             String[] rowKeys = rows[r];
+            float side = (rows[0].length - rowKeys.length) / 2f;
 
             if (r == 2) {
-                rowView.addView(createSpecialKey(symPage == 0 ? "1/2" : "2/2", 1.2f, Color.parseColor("#343A45"),
-                    Feedback.KeyType.SPECIAL, new OnClickListener() {
+                rowView.addView(createFuncKey(symPage == 0 ? "1/2" : "2/2", 0, "More symbols", side,
+                    C_KEY_FUNC, Feedback.KeyType.SPECIAL, H_LETTER, 15, new OnClickListener() {
                         @Override
                         public void onClick(View v) {
                             symPage = symPage == 0 ? 1 : 0;
@@ -562,7 +771,7 @@ public class SgaKeyboardView extends LinearLayout {
             }
 
             for (final String finalKey : rowKeys) {
-                rowView.addView(createCharKey(finalKey, null, null, 1.0f, null, false,
+                rowView.addView(createCharKey(finalKey, null, null, 1.0f, H_LETTER, 22, null, false,
                     new OnClickListener() {
                         @Override
                         public void onClick(View v) {
@@ -571,10 +780,22 @@ public class SgaKeyboardView extends LinearLayout {
                     }, null));
             }
 
-            if (r == 2) {
-                rowView.addView(createBackspaceKey(1.3f));
-            }
+            if (r == 2) rowView.addView(createBackspaceKey(side, H_LETTER));
 
+            keysContainer.addView(rowView);
+        }
+    }
+
+    private void renderEmojiLayout() {
+        float h = (H_NUMBER + 3 * H_LETTER) / EMOJI_ROWS.length;
+        for (int r = 0; r < EMOJI_ROWS.length; r++) {
+            LinearLayout rowView = createRowLayout();
+            for (final String e : EMOJI_ROWS[r]) {
+                rowView.addView(createEmojiKey(e, h));
+            }
+            if (r == EMOJI_ROWS.length - 1) {
+                rowView.addView(createBackspaceKey(1f, h));
+            }
             keysContainer.addView(rowView);
         }
     }
@@ -582,13 +803,13 @@ public class SgaKeyboardView extends LinearLayout {
     private void renderBottomRow() {
         LinearLayout rowView = createRowLayout();
 
-        String toggleText = (currentLayout == LayoutType.SYMBOLS) ? "ABC" : "?123";
-        rowView.addView(createSpecialKey(toggleText, 1.5f, Color.parseColor("#2F333B"),
-            Feedback.KeyType.SPECIAL, new OnClickListener() {
+        boolean panel = currentLayout == LayoutType.SYMBOLS || currentLayout == LayoutType.EMOJI;
+        rowView.addView(createFuncKey(panel ? "ABC" : "!#1", 0, panel ? "Letters" : "Symbols", 1.5f, C_KEY,
+            Feedback.KeyType.SPECIAL, H_LETTER, 17, new OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     flushComposing();
-                    if (currentLayout == LayoutType.SYMBOLS) {
+                    if (currentLayout == LayoutType.SYMBOLS || currentLayout == LayoutType.EMOJI) {
                         currentLayout = layoutBeforeSymbols;
                     } else {
                         layoutBeforeSymbols = currentLayout;
@@ -599,18 +820,31 @@ public class SgaKeyboardView extends LinearLayout {
                 }
             }, null));
 
-        rowView.addView(createSpecialKey("🌐", 1.1f, Color.parseColor("#2F333B"),
-            Feedback.KeyType.SPECIAL, new OnClickListener() {
+        rowView.addView(createFuncKey(null, R.drawable.ic_globe, "Switch keyboard", 1.0f, C_KEY,
+            Feedback.KeyType.SPECIAL, H_LETTER, 0, new OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     flushComposing();
                     if (listener != null) listener.onSwitchIme();
                 }
+            }, new Runnable() {
+                @Override
+                public void run() {
+                    flushComposing();
+                    if (listener != null) listener.onShowImePicker();
+                }
+            }));
+
+        rowView.addView(createFuncKey(null, R.drawable.ic_emoji, "Emoji", 1.0f, C_KEY,
+            Feedback.KeyType.SPECIAL, H_LETTER, 0, new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    toggleEmoji();
+                }
             }, null));
 
-        String spaceLabel = "SGA • " + currentMode.title;
-        rowView.addView(createSpecialKey(spaceLabel, 4.2f, Color.parseColor("#3D424D"),
-            Feedback.KeyType.SPACE, new OnClickListener() {
+        rowView.addView(createFuncKey(spaceLabel(), 0, "Space", 3.9f, C_KEY,
+            Feedback.KeyType.SPACE, H_LETTER, 15, new OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     typeText(" ");
@@ -626,7 +860,7 @@ public class SgaKeyboardView extends LinearLayout {
         // Dot key: long-press for common punctuation
         List<String> dotAlts = new ArrayList<>();
         Collections.addAll(dotAlts, DOT_ALTERNATES);
-        rowView.addView(createCharKey(".", null, null, 1.0f, dotAlts, false,
+        rowView.addView(createCharKey(".", null, null, 1.0f, H_LETTER, 26, dotAlts, false,
             new OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -640,8 +874,8 @@ public class SgaKeyboardView extends LinearLayout {
                 }
             }));
 
-        rowView.addView(createSpecialKey("↵", 1.6f, Color.parseColor("#3F69D6"),
-            Feedback.KeyType.ENTER, new OnClickListener() {
+        rowView.addView(createFuncKey(null, R.drawable.ic_enter, "Enter", 1.6f, C_KEY,
+            Feedback.KeyType.ENTER, H_LETTER, 0, new OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     flushComposing();
@@ -682,6 +916,14 @@ public class SgaKeyboardView extends LinearLayout {
         return s.length() == 1 && Character.isLetter(s.charAt(0));
     }
 
+    /** Drops one-shot shift after a character; caps lock stays on. */
+    private void consumeShift() {
+        if (isShifted && !capsLock) {
+            isShifted = false;
+            renderKeyboard();
+        }
+    }
+
     private void handleCharInput(String key, boolean glyphLayout) {
         if (currentMode.isWordLevel()) {
             if (isLetter(key)) {
@@ -701,23 +943,17 @@ public class SgaKeyboardView extends LinearLayout {
             if (toCommit != null && !toCommit.isEmpty()) typeText(toCommit);
         }
 
-        if (isShifted) {
-            isShifted = false;
-            renderKeyboard();
-        }
+        consumeShift();
     }
 
     /** A long-press choice: digits and symbols are literal; letters go through the active translation. */
     private void handleAlternate(String alt, boolean glyphLayout) {
         if (glyphLayout || !isLetter(alt)) {
-            // On the SGA glyph layout the alternates are plain Latin letters / digits, typed as-is.
+            // On the SGA glyph layout the alternates are plain Latin letters / symbols, typed as-is.
             String text = alt;
             if (isShifted && isLetter(alt)) text = alt.toUpperCase();
             typeText(text);
-            if (isShifted) {
-                isShifted = false;
-                renderKeyboard();
-            }
+            consumeShift();
         } else {
             handleCharInput(alt, false);
         }
@@ -739,9 +975,21 @@ public class SgaKeyboardView extends LinearLayout {
         row.setOrientation(HORIZONTAL);
         row.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         row.setGravity(Gravity.CENTER);
-        int margin = dp(2);
-        row.setPadding(0, margin, 0, margin);
+        row.setPadding(0, dp(5), 0, dp(5));
         return row;
+    }
+
+    private View rowSpacer(float weight) {
+        View v = new View(getContext());
+        v.setLayoutParams(new LinearLayout.LayoutParams(0, 1, weight));
+        return v;
+    }
+
+    private LinearLayout.LayoutParams keyParams(float weight, float heightDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(heightDp), weight);
+        int m = dp(3);
+        lp.setMargins(m, 0, m, 0);
+        return lp;
     }
 
     private boolean isOutside(View v, MotionEvent e) {
@@ -754,58 +1002,57 @@ public class SgaKeyboardView extends LinearLayout {
      * Feedback fires on DOWN; the character is committed on UP (or the chosen alternate).
      */
     private View createCharKey(final String mainText, final String subText, final String hintText,
-                               float weight, final List<String> alts, final boolean displayUpper,
+                               float weight, float heightDp, float textSp, final List<String> alts,
+                               final boolean displayUpper,
                                final OnClickListener clickListener,
                                final AltListener altListener) {
         final FrameLayout keyLayout = new FrameLayout(getContext());
 
-        final GradientDrawable normalBg = new GradientDrawable();
-        normalBg.setCornerRadius(dp(6));
-        normalBg.setColor(Color.parseColor("#2E323B"));
-
-        final GradientDrawable pressedBg = new GradientDrawable();
-        pressedBg.setCornerRadius(dp(6));
-        pressedBg.setColor(Color.parseColor("#4D5463"));
-
+        final GradientDrawable normalBg = rounded(C_KEY, 8);
+        final GradientDrawable pressedBg = rounded(lighten(C_KEY, 0.35f), 8);
         keyLayout.setBackground(normalBg);
 
         TextView tvMain = new TextView(getContext());
         tvMain.setText(mainText);
-        tvMain.setTextColor(Color.WHITE);
-        tvMain.setTextSize(TypedValue.COMPLEX_UNIT_SP, mainText.length() > 2 ? 14 : 19);
+        tvMain.setTextColor(C_TEXT);
+        tvMain.setTextSize(TypedValue.COMPLEX_UNIT_SP, mainText.length() > 2 ? 14 : textSp);
         tvMain.setGravity(Gravity.CENTER);
-        keyLayout.addView(tvMain, new FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        tvMain.setIncludeFontPadding(false);
+        FrameLayout.LayoutParams mlp = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        // The letter sits a little low so the corner hint has room, as on the Samsung keys.
+        if (hintText != null) mlp.topMargin = dp(5);
+        keyLayout.addView(tvMain, mlp);
 
         if (subText != null) {
             TextView tvSub = new TextView(getContext());
             tvSub.setText(subText);
-            tvSub.setTextColor(Color.parseColor("#7A8291"));
+            tvSub.setTextColor(C_SUB);
             tvSub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+            tvSub.setIncludeFontPadding(false);
             FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            slp.bottomMargin = dp(1);
+                Gravity.BOTTOM | Gravity.START);
+            slp.bottomMargin = dp(3);
+            slp.leftMargin = dp(5);
             keyLayout.addView(tvSub, slp);
         }
 
         if (hintText != null) {
             TextView tvHint = new TextView(getContext());
             tvHint.setText(hintText);
-            tvHint.setTextColor(Color.parseColor("#8E99A8"));
-            tvHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9);
+            tvHint.setTextColor(C_HINT);
+            tvHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            tvHint.setIncludeFontPadding(false);
             FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.END);
-            hlp.topMargin = dp(2);
-            hlp.rightMargin = dp(4);
+            hlp.topMargin = dp(3);
+            hlp.rightMargin = dp(5);
             keyLayout.addView(tvHint, hlp);
         }
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), weight);
-        int m = dp(2);
-        lp.setMargins(m, m, m, m);
-        keyLayout.setLayoutParams(lp);
+        keyLayout.setLayoutParams(keyParams(weight, heightDp));
 
         // Alternates shown uppercase while shifted (digits/symbols are unaffected)
         final List<String> shownAlts = new ArrayList<>();
@@ -881,32 +1128,69 @@ public class SgaKeyboardView extends LinearLayout {
         return keyLayout;
     }
 
-    private View createSpecialKey(String text, float weight, final int bgColor, final Feedback.KeyType type,
-                                  final OnClickListener clickListener, final Runnable onLongPress) {
+    /** An emoji cell: no key plate, just the glyph, committed on tap. */
+    private View createEmojiKey(final String emoji, float heightDp) {
         final TextView tv = new TextView(getContext());
-        tv.setText(text);
-        tv.setTextColor(Color.WHITE);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setText(emoji);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         tv.setGravity(Gravity.CENTER);
-        tv.setSingleLine(true);
+        tv.setIncludeFontPadding(false);
+        tv.setContentDescription(emoji);
+        tv.setLayoutParams(keyParams(1f, heightDp));
 
-        final GradientDrawable normalBg = new GradientDrawable();
-        normalBg.setCornerRadius(dp(6));
-        normalBg.setColor(bgColor);
-
-        final GradientDrawable pressedBg = new GradientDrawable();
-        pressedBg.setCornerRadius(dp(6));
-        pressedBg.setColor(Color.parseColor("#5A6273"));
-
-        tv.setBackground(normalBg);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), weight);
-        int m = dp(2);
-        lp.setMargins(m, m, m, m);
-        tv.setLayoutParams(lp);
-
+        final GradientDrawable pressedBg = rounded(C_KEY, 8);
         tv.setOnTouchListener(new OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        tv.setBackground(pressedBg);
+                        feedback.key(Feedback.KeyType.LETTER);
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        tv.setBackground(null);
+                        if (!isOutside(v, event)) typeText(emoji);
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        tv.setBackground(null);
+                        break;
+                }
+                return true;
+            }
+        });
+        return tv;
+    }
+
+    /**
+     * A function key showing either text or a vector icon. Fires on UP; an optional long press
+     * runs instead of the click.
+     */
+    private View createFuncKey(String text, int iconRes, String description, float weight, int bgColor,
+                               final Feedback.KeyType type, float heightDp, float textSp,
+                               final OnClickListener clickListener, final Runnable onLongPress) {
+        final FrameLayout key = new FrameLayout(getContext());
+        key.setContentDescription(description);
+
+        if (iconRes != 0) {
+            key.addView(icon(iconRes, 24f));
+        } else {
+            TextView tv = new TextView(getContext());
+            tv.setText(text);
+            tv.setTextColor(C_TEXT);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp > 0 ? textSp : 15);
+            tv.setGravity(Gravity.CENTER);
+            tv.setSingleLine(true);
+            tv.setIncludeFontPadding(false);
+            key.addView(tv, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        }
+
+        final GradientDrawable normalBg = rounded(bgColor, 8);
+        final GradientDrawable pressedBg = rounded(lighten(bgColor, 0.35f), 8);
+        key.setBackground(normalBg);
+        key.setLayoutParams(keyParams(weight, heightDp));
+
+        key.setOnTouchListener(new OnTouchListener() {
             private boolean longFired = false;
             private Runnable longPress;
 
@@ -915,7 +1199,7 @@ public class SgaKeyboardView extends LinearLayout {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         longFired = false;
-                        tv.setBackground(pressedBg);
+                        key.setBackground(pressedBg);
                         feedback.key(type);
                         if (onLongPress != null) {
                             longPress = new Runnable() {
@@ -931,12 +1215,12 @@ public class SgaKeyboardView extends LinearLayout {
                         break;
                     case MotionEvent.ACTION_UP:
                         cancelLongPress();
-                        tv.setBackground(normalBg);
+                        key.setBackground(normalBg);
                         if (!longFired && !isOutside(v, event) && clickListener != null) clickListener.onClick(v);
                         break;
                     case MotionEvent.ACTION_CANCEL:
                         cancelLongPress();
-                        tv.setBackground(normalBg);
+                        key.setBackground(normalBg);
                         break;
                 }
                 return true;
@@ -950,38 +1234,25 @@ public class SgaKeyboardView extends LinearLayout {
             }
         });
 
-        return tv;
+        return key;
     }
 
-    private View createBackspaceKey(float weight) {
-        final TextView tv = new TextView(getContext());
-        tv.setText("⌫");
-        tv.setTextColor(Color.parseColor("#FF8A80"));
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setGravity(Gravity.CENTER);
+    private View createBackspaceKey(float weight, float heightDp) {
+        final FrameLayout key = new FrameLayout(getContext());
+        key.setContentDescription("Delete");
+        key.addView(icon(R.drawable.ic_backspace, 24f));
 
-        final GradientDrawable normalBg = new GradientDrawable();
-        normalBg.setCornerRadius(dp(6));
-        normalBg.setColor(Color.parseColor("#343A45"));
+        final GradientDrawable normalBg = rounded(C_KEY_FUNC, 8);
+        final GradientDrawable pressedBg = rounded(lighten(C_KEY_FUNC, 0.35f), 8);
+        key.setBackground(normalBg);
+        key.setLayoutParams(keyParams(weight, heightDp));
 
-        final GradientDrawable pressedBg = new GradientDrawable();
-        pressedBg.setCornerRadius(dp(6));
-        pressedBg.setColor(Color.parseColor("#5A6273"));
-
-        tv.setBackground(normalBg);
-
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), weight);
-        int m = dp(2);
-        lp.setMargins(m, m, m, m);
-        tv.setLayoutParams(lp);
-
-        tv.setOnTouchListener(new OnTouchListener() {
+        key.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
-                        tv.setBackground(pressedBg);
+                        key.setBackground(pressedBg);
                         feedback.key(Feedback.KeyType.DELETE);
                         handleDelete();
 
@@ -999,7 +1270,7 @@ public class SgaKeyboardView extends LinearLayout {
 
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        tv.setBackground(normalBg);
+                        key.setBackground(normalBg);
                         stopRepeat();
                         break;
                 }
@@ -1007,7 +1278,7 @@ public class SgaKeyboardView extends LinearLayout {
             }
         });
 
-        return tv;
+        return key;
     }
 
     private void stopRepeat() {
@@ -1022,6 +1293,23 @@ public class SgaKeyboardView extends LinearLayout {
         super.onDetachedFromWindow();
         stopRepeat();
         popups.dismissAll();
+    }
+
+    // ---- drawing helpers ----
+
+    private GradientDrawable rounded(int color, float radiusDp) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radiusDp));
+        return d;
+    }
+
+    /** Mixes a colour toward white; used for the pressed state of keys. */
+    private static int lighten(int color, float amount) {
+        int r = Color.red(color) + Math.round((255 - Color.red(color)) * amount * 0.4f);
+        int g = Color.green(color) + Math.round((255 - Color.green(color)) * amount * 0.4f);
+        int b = Color.blue(color) + Math.round((255 - Color.blue(color)) * amount * 0.4f);
+        return Color.rgb(r, g, b);
     }
 
     private int dp(float dp) {

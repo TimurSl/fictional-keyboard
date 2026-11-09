@@ -7,17 +7,21 @@ import java.util.Random;
 public class Translators {
 
     public enum Mode {
-        SGA("ᓵ⍑ SGA"),
-        RUNES("ᚱ Runes"),
-        ZALGO("҂ Zalgo"),
-        GOTHIC("𝔊 Gothic"),
-        NORMAL("ABC Norm"),
-        DEMON("👹 Ozkavosh"),
-        ARIRAL("👽 Ariral");
+        SGA("ᓵ⍑ SGA", "SGA"),
+        RUNES("ᚱ Runes", "Runes"),
+        ZALGO("҂ Zalgo", "Zalgo"),
+        GOTHIC("𝔊 Gothic", "Gothic"),
+        NORMAL("ABC Norm", "Normal"),
+        DEMON("👹 Ozkavosh", "Ozkavosh"),
+        ARIRAL("👽 Ariral", "Ariral");
 
+        /** Chip text, with a decorative prefix. */
         public final String title;
-        Mode(String title) {
+        /** Plain name, shown on the space bar. */
+        public final String label;
+        Mode(String title, String label) {
             this.title = title;
+            this.label = label;
         }
 
         /** Modes that translate whole words (need the full word before output). */

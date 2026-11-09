@@ -1,7 +1,9 @@
 package com.enchanting.keyboard;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -10,6 +12,9 @@ import java.util.Set;
  * The wiki only describes phonetic rules (syllables are a vowel plus a consonant, a sharp R,
  * no silent letters, almost every word ends in "-a", Apple -> Appule), so this is a rule-based
  * approximation of how an Ariral would pronounce English or Russian text.
+ *
+ * Number words are not covered by those rules (they would just be spelled out phonetically),
+ * so {@link #COINED_NUMBERS} gives them invented Ariral names. Those are NOT canon.
  */
 public final class Ariral {
     private Ariral() {}
@@ -24,6 +29,34 @@ public final class Ariral {
         "sn", "sp", "st", "sw", "tr", "tw", "nd", "nt", "ld", "lt", "rd", "rt", "rn", "rm", "rl",
         "mp", "nk", "ft", "ps", "ks", "ls", "ns", "rs", "ts", "ds", "ms", "bs", "gs", "lk", "lm",
         "lp", "rk", "rp", "rb", "rg", "lb", "lf", "mb", "nc", "nf", "ngl", "xt"));
+
+    // Invented (non-canon) Ariral number words: vowel + consonant syllables, ending in "a", sharp "rr".
+    // {ariral, english, russian}
+    private static final String[][] COINED_NUMBERS = {
+        {"ula", "zero", "ноль,нуль"},
+        {"una", "one", "один"},
+        {"duva", "two", "два,две"},
+        {"tarra", "three", "три"},
+        {"korra", "four", "четыре"},
+        {"pima", "five", "пять"},
+        {"sika", "six", "шесть"},
+        {"seva", "seven", "семь"},
+        {"ota", "eight", "восемь"},
+        {"nona", "nine", "девять"},
+        {"deka", "ten", "десять"},
+    };
+
+    private static final Map<String, String> NUMBER_TO_ARIRAL = new HashMap<>();
+    private static final Map<String, String> ARIRAL_TO_NUMBER = new HashMap<>();
+
+    static {
+        for (String[] e : COINED_NUMBERS) {
+            String[] en = e[1].split(",");
+            for (String w : en) NUMBER_TO_ARIRAL.put(w, e[0]);
+            for (String w : e[2].split(",")) NUMBER_TO_ARIRAL.put(w, e[0]);
+            ARIRAL_TO_NUMBER.put(e[0], en[0]);
+        }
+    }
 
     /** Translates running text word by word. */
     public static String translate(String text) {
@@ -45,6 +78,8 @@ public final class Ariral {
         String result;
         if (isLaugh(w)) {
             result = "ack";
+        } else if (coinedNumber(word, w) != null) {
+            result = coinedNumber(word, w);
         } else {
             result = convert(w);
         }
@@ -52,6 +87,12 @@ public final class Ariral {
             result = Character.toUpperCase(result.charAt(0)) + result.substring(1);
         }
         return result;
+    }
+
+    /** Coined Ariral number word for the original spelling (Russian) or its Latin form, else null. */
+    private static String coinedNumber(String original, String latin) {
+        String hit = NUMBER_TO_ARIRAL.get(original.toLowerCase());
+        return hit != null ? hit : NUMBER_TO_ARIRAL.get(latin);
     }
 
     private static boolean isLaugh(String w) {
@@ -152,6 +193,8 @@ public final class Ariral {
     public static String decodeWord(String word) {
         String w = word.toLowerCase();
         if (w.equals("ack")) return "lol";
+        String number = ARIRAL_TO_NUMBER.get(w);
+        if (number != null) return number;
         // strip trailing "a" after a consonant
         if (w.length() > 2 && w.endsWith("a") && isConsonantAt(w, w.length() - 2)) {
             w = w.substring(0, w.length() - 1);

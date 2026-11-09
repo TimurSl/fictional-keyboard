@@ -11,6 +11,10 @@ import java.util.Map;
  * The vocabulary is a fan-compiled list based on a developer post; a few glosses
  * (tho, hahsh, kish) are less certain. English and Russian words map to the same
  * demon words. Unknown words get a deterministic demonic rendering.
+ *
+ * The canon list is tiny (it has no numbers past "one"/"seven", no "and"/"or", no greetings),
+ * so {@link #COINED} fills those gaps with invented words in the same style. They are
+ * NOT canon; they only exist so common sentences do not fall back to transliteration.
  */
 public final class Ozkavosh {
     private Ozkavosh() {}
@@ -70,6 +74,46 @@ public final class Ozkavosh {
         {"vohm", "less", "меньше"},
     };
 
+    // Invented (non-canon) words for things the real vocabulary lacks.
+    // Spellings avoid ordinary English words so Decoder auto-detection stays reliable.
+    private static final String[][] COINED = {
+        // numbers
+        {"nuzh", "zero", "ноль,нуль"},
+        {"duv", "two", "два,две"},
+        {"trok", "three", "три"},
+        {"kvath", "four", "четыре"},
+        {"pesh", "five", "пять"},
+        {"zesh", "six", "шесть"},
+        {"okh", "eight", "восемь"},
+        {"novh", "nine", "девять"},
+        {"dekh", "ten", "десять"},
+        // connectives and question words
+        {"ak", "and", "и,а"},
+        {"ur", "or", "или"},
+        {"bahk", "but", "но"},
+        {"zha", "yes", "да"},
+        {"shek", "what,why,how", "что,почему,как"},
+        {"kekh", "who", "кто"},
+        {"gadh", "where", "где"},
+        // prepositions
+        {"sha", "to,for", "к,для"},
+        {"mek", "with,from", "с,от"},
+        {"kem", "in,inside", "в,внутри"},
+        // greetings and everyday words
+        {"hekh", "hello,hi,greetings", "привет,здравствуй,приветствую"},
+        {"zulh", "bye,farewell", "пока,прощай"},
+        {"kosh", "death,die,dead,kill", "смерть,умереть,мёртвый,мертвый,убить"},
+        {"zivh", "life,live,alive", "жизнь,жить,живой"},
+        {"vargh", "blood", "кровь"},
+        {"fyr", "fire,burn", "огонь,гореть,жечь"},
+        {"nokt", "night", "ночь"},
+        {"dhay", "day", "день"},
+        {"krazh", "friend,ally", "друг,союзник"},
+        {"ozhkar", "enemy,foe", "враг,противник"},
+        {"thel", "love,like", "любовь,любить"},
+        {"hozh", "hate", "ненависть,ненавидеть"},
+    };
+
     private static final String NOT_PREFIX = "vo'";
     private static final String VERY_PREFIX = "ahm'";
 
@@ -77,15 +121,43 @@ public final class Ozkavosh {
     private static final Map<String, String> DEMON_TO_EN = new HashMap<>();
     private static final Map<String, String> DEMON_TO_RU = new HashMap<>();
 
+    private static final List<String> DUPLICATES = new ArrayList<>();
+
     static {
-        for (String[] e : ENTRIES) {
+        register(ENTRIES);
+        register(COINED);
+    }
+
+    private static void register(String[][] entries) {
+        for (String[] e : entries) {
             String[] en = e[1].split(",");
             String[] ru = e[2].split(",");
-            for (String w : en) TO_DEMON.put(w, e[0]);
-            for (String w : ru) TO_DEMON.put(w, e[0]);
-            DEMON_TO_EN.put(e[0], en[0]);
-            DEMON_TO_RU.put(e[0], ru[0]);
+            for (String w : en) add(w, e[0]);
+            for (String w : ru) add(w, e[0]);
+            // canon entries come first, so an invented word never replaces a real gloss
+            if (!DEMON_TO_EN.containsKey(e[0])) DEMON_TO_EN.put(e[0], en[0]);
+            if (!DEMON_TO_RU.containsKey(e[0])) DEMON_TO_RU.put(e[0], ru[0]);
         }
+    }
+
+    private static void add(String word, String demon) {
+        String old = TO_DEMON.get(word);
+        if (old != null && !old.equals(demon)) {
+            DUPLICATES.add(word); // first registration wins; the unit test fails on any entry here
+            return;
+        }
+        TO_DEMON.put(word, demon);
+    }
+
+    /** Source words listed under two different demon words (must stay empty). */
+    static List<String> duplicateGlosses() {
+        return DUPLICATES;
+    }
+
+    /** True if the demon word comes from the invented list rather than the canon vocabulary. */
+    static boolean isCoined(String demonWord) {
+        for (String[] e : COINED) if (e[0].equals(demonWord)) return true;
+        return false;
     }
 
     private static final String[] EN_SUFFIXES = {"ing", "ed", "es", "s", "d"};
