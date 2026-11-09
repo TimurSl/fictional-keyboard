@@ -5,7 +5,9 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -81,6 +83,11 @@ public class SgaKeyboardView extends LinearLayout {
     private static final float H_LETTER = 42f;
     private static final float SIDE_W = 1.5f;
 
+    // Visual gap around each key plate (dp). It is drawn as an inset inside the key view rather
+    // than as a margin, so a tap that lands in the gap still hits the nearest key.
+    private static final float GAP_H = 3f;
+    private static final float GAP_V = 5f;
+
     private final OnKeyActionListener listener;
     private final Prefs prefs;
     private final Feedback feedback;
@@ -103,6 +110,10 @@ public class SgaKeyboardView extends LinearLayout {
     private LinearLayout keysContainer;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private Runnable repeatDeleteRunnable;
+
+    // Number of keys currently held down, and whether a re-render is waiting for them.
+    private int keysDown = 0;
+    private boolean renderPending = false;
 
     // decode strip
     private LinearLayout decodeStrip;
@@ -347,7 +358,7 @@ public class SgaKeyboardView extends LinearLayout {
                     currentLayout = base;
                     layoutBeforeSymbols = base;
                     prefs.setLastLayout(base.name());
-                    renderKeyboard();
+                    requestRender();
                 }
             }));
         toolbar.addView(toolbarSpacer());
@@ -399,7 +410,7 @@ public class SgaKeyboardView extends LinearLayout {
                     currentMode = mode;
                     prefs.setLastMode(mode.name());
                     modeStripOpen = false;
-                    renderKeyboard();
+                    requestRender();
                 }
             });
             modeRow.addView(chip);
@@ -414,7 +425,7 @@ public class SgaKeyboardView extends LinearLayout {
             if (currentLayout != LayoutType.SYMBOLS) layoutBeforeSymbols = currentLayout;
             currentLayout = LayoutType.EMOJI;
         }
-        renderKeyboard();
+        requestRender();
     }
 
     /** The text layout underneath the symbol/emoji panels. */
@@ -598,7 +609,35 @@ public class SgaKeyboardView extends LinearLayout {
 
     // ---- Rendering ----
 
+    /**
+     * Rebuilds the keys, but never while a finger is still on one: tearing the views down
+     * cancels that touch and the key the user pressed is silently lost (e.g. the second
+     * letter of a fast "He" after a one-shot shift). The rebuild waits for the last release.
+     */
+    private void requestRender() {
+        renderPending = true;
+        if (keysDown == 0) uiHandler.post(pendingRender);
+    }
+
+    private final Runnable pendingRender = new Runnable() {
+        @Override
+        public void run() {
+            if (renderPending && keysDown == 0) renderKeyboard();
+        }
+    };
+
+    private void keyPressed() {
+        keysDown++;
+    }
+
+    private void keyReleased() {
+        if (keysDown > 0) keysDown--;
+        if (keysDown == 0 && renderPending) uiHandler.post(pendingRender);
+    }
+
     public void renderKeyboard() {
+        renderPending = false;
+        uiHandler.removeCallbacks(pendingRender);
         refreshToolbar();
         keysContainer.removeAllViews();
 
@@ -642,7 +681,7 @@ public class SgaKeyboardView extends LinearLayout {
             // Shorter rows are centred (row 2) or flanked by shift/backspace (row 3).
             float side = (rows[0].length - rowKeys.length) / 2f;
 
-            if (r == 1 && side > 0) rowView.addView(rowSpacer(side));
+            if (r == 1 && side > 0) rowView.addView(rowSpacer(side, null));
 
             if (r == 2) {
                 int shiftIcon = capsLock ? R.drawable.ic_caps : (isShifted ? R.drawable.ic_shift_on : R.drawable.ic_shift);
@@ -690,7 +729,13 @@ public class SgaKeyboardView extends LinearLayout {
                 rowView.addView(keyView);
             }
 
-            if (r == 1 && side > 0) rowView.addView(rowSpacer(side));
+            if (r == 1 && side > 0) {
+                // The empty space beside a centred row belongs to its outermost keys.
+                int firstKey = 1; // index 0 is the left spacer
+                int lastKey = rowView.getChildCount() - 1;
+                rowView.addView(rowSpacer(side, rowView.getChildAt(lastKey)));
+                ((TouchForwarder) rowView.getChildAt(0)).target = rowView.getChildAt(firstKey);
+            }
             if (r == 2) rowView.addView(createBackspaceKey(side, H_LETTER));
 
             keysContainer.addView(rowView);
@@ -708,7 +753,7 @@ public class SgaKeyboardView extends LinearLayout {
             isShifted = !isShifted;
         }
         lastShiftTap = now;
-        renderKeyboard();
+        requestRender();
     }
 
     private void renderSymbolsLayout() {
@@ -724,7 +769,7 @@ public class SgaKeyboardView extends LinearLayout {
                         @Override
                         public void onClick(View v) {
                             symPage = symPage == 0 ? 1 : 0;
-                            renderKeyboard();
+                            requestRender();
                         }
                     }, null));
             }
@@ -775,7 +820,7 @@ public class SgaKeyboardView extends LinearLayout {
                         currentLayout = LayoutType.SYMBOLS;
                         symPage = 0;
                     }
-                    renderKeyboard();
+                    requestRender();
                 }
             }, null));
 
@@ -879,7 +924,7 @@ public class SgaKeyboardView extends LinearLayout {
     private void consumeShift() {
         if (isShifted && !capsLock) {
             isShifted = false;
-            renderKeyboard();
+            requestRender();
         }
     }
 
@@ -934,21 +979,45 @@ public class SgaKeyboardView extends LinearLayout {
         row.setOrientation(HORIZONTAL);
         row.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         row.setGravity(Gravity.CENTER);
-        row.setPadding(0, dp(5), 0, dp(5));
         return row;
     }
 
-    private View rowSpacer(float weight) {
-        View v = new View(getContext());
-        v.setLayoutParams(new LinearLayout.LayoutParams(0, 1, weight));
+    /** Empty space in a row that hands its touches to a neighbouring key. */
+    private final class TouchForwarder extends View {
+        View target;
+
+        TouchForwarder(Context context, View target) {
+            super(context);
+            this.target = target;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (target == null) return false;
+            MotionEvent e = MotionEvent.obtain(event);
+            e.offsetLocation(getLeft() - target.getLeft(), getTop() - target.getTop());
+            target.dispatchTouchEvent(e);
+            e.recycle();
+            return true;
+        }
+    }
+
+    private View rowSpacer(float weight, View target) {
+        View v = new TouchForwarder(getContext(), target);
+        v.setLayoutParams(new LinearLayout.LayoutParams(0, LayoutParams.MATCH_PARENT, weight));
         return v;
     }
 
+    /** Key size including the gap around its plate; the gap stays touchable. */
     private LinearLayout.LayoutParams keyParams(float weight, float heightDp) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(heightDp), weight);
-        int m = dp(3);
-        lp.setMargins(m, 0, m, 0);
-        return lp;
+        return new LinearLayout.LayoutParams(0, dp(heightDp + 2 * GAP_V), weight);
+    }
+
+    /** A rounded key plate, inset so the visible gap between keys is part of the key's touch area. */
+    private Drawable plate(int color) {
+        int h = dp(GAP_H);
+        int v = dp(GAP_V);
+        return new InsetDrawable(rounded(color, 8), h, v, h, v);
     }
 
     private boolean isOutside(View v, MotionEvent e) {
@@ -967,8 +1036,8 @@ public class SgaKeyboardView extends LinearLayout {
                                final AltListener altListener) {
         final FrameLayout keyLayout = new FrameLayout(getContext());
 
-        final GradientDrawable normalBg = rounded(C_KEY, 8);
-        final GradientDrawable pressedBg = rounded(lighten(C_KEY, 0.35f), 8);
+        final Drawable normalBg = plate(C_KEY);
+        final Drawable pressedBg = plate(lighten(C_KEY, 0.35f));
         keyLayout.setBackground(normalBg);
 
         TextView tvMain = new TextView(getContext());
@@ -992,8 +1061,8 @@ public class SgaKeyboardView extends LinearLayout {
             FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.START);
-            slp.bottomMargin = dp(3);
-            slp.leftMargin = dp(5);
+            slp.bottomMargin = dp(GAP_V + 3);
+            slp.leftMargin = dp(GAP_H + 5);
             keyLayout.addView(tvSub, slp);
         }
 
@@ -1006,8 +1075,8 @@ public class SgaKeyboardView extends LinearLayout {
             FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.END);
-            hlp.topMargin = dp(3);
-            hlp.rightMargin = dp(5);
+            hlp.topMargin = dp(GAP_V + 3);
+            hlp.rightMargin = dp(GAP_H + 5);
             keyLayout.addView(tvHint, hlp);
         }
 
@@ -1022,6 +1091,7 @@ public class SgaKeyboardView extends LinearLayout {
         final boolean preview = !mainText.trim().isEmpty() && mainText.length() <= 3;
 
         keyLayout.setOnTouchListener(new OnTouchListener() {
+            private boolean down = false;
             private boolean altActive = false;
             private Runnable longPress;
 
@@ -1029,21 +1099,26 @@ public class SgaKeyboardView extends LinearLayout {
             public boolean onTouch(final View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        if (!down) {
+                            down = true;
+                            keyPressed();
+                        }
                         altActive = false;
                         keyLayout.setBackground(pressedBg);
                         feedback.key(Feedback.KeyType.LETTER);
                         if (preview) popups.showPreview(keyLayout, mainText);
-                        if (hasAlts) {
-                            longPress = new Runnable() {
-                                @Override
-                                public void run() {
-                                    altActive = true;
-                                    popups.hidePreview();
-                                    popups.showAlternates(keyLayout, shownAlts);
-                                    feedback.key(Feedback.KeyType.POPUP_OPEN);
-                                }
-                            };
-                            uiHandler.postDelayed(longPress, LONG_PRESS_MS);
+                        startLongPress();
+                        break;
+
+                    case MotionEvent.ACTION_POINTER_DOWN:
+                        // Another finger hit this key while the first is still on it (fast
+                        // "ll" with two thumbs): the first touch counts as a finished tap,
+                        // otherwise both presses would collapse into a single letter.
+                        if (!altActive) {
+                            cancelLongPress();
+                            feedback.key(Feedback.KeyType.LETTER);
+                            if (clickListener != null) clickListener.onClick(v);
+                            startLongPress();
                         }
                         break;
 
@@ -1062,8 +1137,12 @@ public class SgaKeyboardView extends LinearLayout {
                             if (idx >= 0 && idx < alts.size()) altListener.onAlternate(alts.get(idx));
                         } else {
                             popups.hidePreview();
-                            if (!isOutside(v, event) && clickListener != null) clickListener.onClick(v);
+                            // Always commit: a finger that rolled off the key while typing fast
+                            // still pressed it, and dropping the letter is far worse than
+                            // typing the key the touch started on.
+                            if (clickListener != null) clickListener.onClick(v);
                         }
+                        release();
                         break;
 
                     case MotionEvent.ACTION_CANCEL:
@@ -1071,15 +1150,37 @@ public class SgaKeyboardView extends LinearLayout {
                         keyLayout.setBackground(normalBg);
                         altActive = false;
                         popups.dismissAll();
+                        release();
                         break;
                 }
                 return true;
+            }
+
+            private void startLongPress() {
+                if (!hasAlts) return;
+                longPress = new Runnable() {
+                    @Override
+                    public void run() {
+                        altActive = true;
+                        popups.hidePreview();
+                        popups.showAlternates(keyLayout, shownAlts);
+                        feedback.key(Feedback.KeyType.POPUP_OPEN);
+                    }
+                };
+                uiHandler.postDelayed(longPress, LONG_PRESS_MS);
             }
 
             private void cancelLongPress() {
                 if (longPress != null) {
                     uiHandler.removeCallbacks(longPress);
                     longPress = null;
+                }
+            }
+
+            private void release() {
+                if (down) {
+                    down = false;
+                    keyReleased();
                 }
             }
         });
@@ -1097,24 +1198,39 @@ public class SgaKeyboardView extends LinearLayout {
         tv.setContentDescription(emoji);
         tv.setLayoutParams(keyParams(1f, heightDp));
 
-        final GradientDrawable pressedBg = rounded(C_KEY, 8);
+        final Drawable pressedBg = plate(C_KEY);
         tv.setOnTouchListener(new OnTouchListener() {
+            private boolean down = false;
+
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        if (!down) {
+                            down = true;
+                            keyPressed();
+                        }
                         tv.setBackground(pressedBg);
                         feedback.key(Feedback.KeyType.LETTER);
                         break;
                     case MotionEvent.ACTION_UP:
                         tv.setBackground(null);
                         if (!isOutside(v, event)) typeText(emoji);
+                        release();
                         break;
                     case MotionEvent.ACTION_CANCEL:
                         tv.setBackground(null);
+                        release();
                         break;
                 }
                 return true;
+            }
+
+            private void release() {
+                if (down) {
+                    down = false;
+                    keyReleased();
+                }
             }
         });
         return tv;
@@ -1144,12 +1260,13 @@ public class SgaKeyboardView extends LinearLayout {
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         }
 
-        final GradientDrawable normalBg = rounded(bgColor, 8);
-        final GradientDrawable pressedBg = rounded(lighten(bgColor, 0.35f), 8);
+        final Drawable normalBg = plate(bgColor);
+        final Drawable pressedBg = plate(lighten(bgColor, 0.35f));
         key.setBackground(normalBg);
         key.setLayoutParams(keyParams(weight, heightDp));
 
         key.setOnTouchListener(new OnTouchListener() {
+            private boolean down = false;
             private boolean longFired = false;
             private Runnable longPress;
 
@@ -1157,6 +1274,10 @@ public class SgaKeyboardView extends LinearLayout {
             public boolean onTouch(final View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        if (!down) {
+                            down = true;
+                            keyPressed();
+                        }
                         longFired = false;
                         key.setBackground(pressedBg);
                         feedback.key(type);
@@ -1176,10 +1297,12 @@ public class SgaKeyboardView extends LinearLayout {
                         cancelLongPress();
                         key.setBackground(normalBg);
                         if (!longFired && !isOutside(v, event) && clickListener != null) clickListener.onClick(v);
+                        release();
                         break;
                     case MotionEvent.ACTION_CANCEL:
                         cancelLongPress();
                         key.setBackground(normalBg);
+                        release();
                         break;
                 }
                 return true;
@@ -1189,6 +1312,13 @@ public class SgaKeyboardView extends LinearLayout {
                 if (longPress != null) {
                     uiHandler.removeCallbacks(longPress);
                     longPress = null;
+                }
+            }
+
+            private void release() {
+                if (down) {
+                    down = false;
+                    keyReleased();
                 }
             }
         });
@@ -1201,16 +1331,22 @@ public class SgaKeyboardView extends LinearLayout {
         key.setContentDescription("Delete");
         key.addView(icon(R.drawable.ic_backspace, 24f));
 
-        final GradientDrawable normalBg = rounded(C_KEY_FUNC, 8);
-        final GradientDrawable pressedBg = rounded(lighten(C_KEY_FUNC, 0.35f), 8);
+        final Drawable normalBg = plate(C_KEY_FUNC);
+        final Drawable pressedBg = plate(lighten(C_KEY_FUNC, 0.35f));
         key.setBackground(normalBg);
         key.setLayoutParams(keyParams(weight, heightDp));
 
         key.setOnTouchListener(new OnTouchListener() {
+            private boolean down = false;
+
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        if (!down) {
+                            down = true;
+                            keyPressed();
+                        }
                         key.setBackground(pressedBg);
                         feedback.key(Feedback.KeyType.DELETE);
                         handleDelete();
@@ -1231,6 +1367,10 @@ public class SgaKeyboardView extends LinearLayout {
                     case MotionEvent.ACTION_CANCEL:
                         key.setBackground(normalBg);
                         stopRepeat();
+                        if (down) {
+                            down = false;
+                            keyReleased();
+                        }
                         break;
                 }
                 return true;
@@ -1252,6 +1392,9 @@ public class SgaKeyboardView extends LinearLayout {
         super.onDetachedFromWindow();
         stopRepeat();
         popups.dismissAll();
+        // Touches are cancelled on detach; make sure a deferred re-render is not stuck.
+        keysDown = 0;
+        if (renderPending) renderKeyboard();
     }
 
     // ---- drawing helpers ----
