@@ -4,17 +4,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build;
-import android.os.IBinder;
 import android.os.SystemClock;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
-import android.view.inputmethod.InputMethodSubtype;
-
-import java.util.List;
-import java.util.Map;
 
 public class SgaInputMethodService extends InputMethodService implements SgaKeyboardView.OnKeyActionListener {
 
@@ -80,42 +74,11 @@ public class SgaInputMethodService extends InputMethodService implements SgaKeyb
     }
 
     @Override
-    public void onHideKeyboard() {
-        requestHideSelf(0);
-    }
-
-    @Override
     public void onOpenSettings() {
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
         requestHideSelf(0);
-    }
-
-    /** Hands over to an installed voice input method (e.g. Google voice typing), if there is one. */
-    @Override
-    public boolean onVoiceInput() {
-        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm == null) return false;
-        try {
-            Map<InputMethodInfo, List<InputMethodSubtype>> shortcuts = imm.getShortcutInputMethodsAndSubtypes();
-            for (Map.Entry<InputMethodInfo, List<InputMethodSubtype>> e : shortcuts.entrySet()) {
-                for (InputMethodSubtype subtype : e.getValue()) {
-                    if (!"voice".equals(subtype.getMode())) continue;
-                    String id = e.getKey().getId();
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        switchInputMethod(id, subtype);
-                    } else {
-                        IBinder token = getWindow().getWindow().getAttributes().token;
-                        imm.setInputMethodAndSubtype(token, id, subtype);
-                    }
-                    return true;
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // the system refused the switch
-        }
-        return false;
     }
 
     @Override
