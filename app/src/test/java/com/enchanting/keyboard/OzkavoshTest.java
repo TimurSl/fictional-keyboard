@@ -2,6 +2,7 @@ package com.enchanting.keyboard;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -70,5 +71,41 @@ public class OzkavoshTest {
         assertEquals("vo'", Ozkavosh.modifierPrefix("Not"));
         assertEquals("ahm'", Ozkavosh.modifierPrefix("очень"));
         assertNull(Ozkavosh.modifierPrefix("safe"));
+    }
+
+    @Test
+    public void noWordIsListedUnderTwoDemonWords() {
+        assertEquals("[]", Ozkavosh.duplicateGlosses().toString());
+    }
+
+    @Test
+    public void canonWordsWinOverCoinedOnes() {
+        assertEquals("ov", Ozkavosh.translate("one"));
+        assertEquals("sav", Ozkavosh.translate("семь"));
+        assertEquals("not home", Ozkavosh.decode("vo'nesh", false));
+        assertTrue(!Ozkavosh.isCoined("ov") && Ozkavosh.isCoined("duv"));
+    }
+
+    @Test
+    public void coinedNumbersAndConnectives() {
+        assertEquals("nuzh ov duv trok kvath pesh zesh sav okh novh dekh",
+            Ozkavosh.translate("zero one two three four five six seven eight nine ten"));
+        assertEquals("duv", Ozkavosh.translate("два"));
+        assertEquals("ozh ak izh", Ozkavosh.translate("I and you"));
+        assertEquals("hekh ozhkar", Ozkavosh.translate("hello enemy"));
+        assertEquals("kosh", Ozkavosh.translate("dies"));
+    }
+
+    @Test
+    public void coinedWordsDecodeBack() {
+        assertEquals("two and ten", Ozkavosh.decode("duv ak dekh", false));
+        assertEquals("два и десять", Ozkavosh.decode("duv ak dekh", true));
+        assertEquals("ozh ak izh", Ozkavosh.translate(Ozkavosh.decode("ozh ak izh", false)));
+    }
+
+    @Test
+    public void digitsAndModifiersAreUntouched() {
+        assertEquals("42", Ozkavosh.translate("42"));
+        assertEquals("vo'duv", Ozkavosh.translate("not two"));
     }
 }

@@ -65,4 +65,21 @@ public class AriralTest {
         assertEquals("hello", Ariral.decodeWord("hello"));
         assertEquals("lol", Ariral.decodeWord("ack"));
     }
+
+    @Test
+    public void coinedNumberWords() {
+        assertEquals("una duva tarra korra", Ariral.translate("one two three four"));
+        assertEquals("Duva", Ariral.translateWord("Two"));
+        assertEquals("pima sika", Ariral.translate("пять шесть"));
+        assertEquals("ula", Ariral.translateWord("zero"));
+        // digits are still left alone
+        assertEquals("42", Ariral.translate("42"));
+    }
+
+    @Test
+    public void coinedNumbersDecodeBack() {
+        assertEquals("three", Ariral.decodeWord("tarra"));
+        assertEquals("ten", Ariral.decodeWord("deka"));
+        assertEquals("seven", Ariral.decodeWord("seva"));
+    }
 }

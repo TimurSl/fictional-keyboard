@@ -39,7 +39,7 @@ public final class KeyPopups {
         tv.setTextColor(Color.WHITE);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, text.length() > 2 ? 22 : 30);
         tv.setGravity(Gravity.CENTER);
-        tv.setBackground(rounded("#4D5463", 10));
+        tv.setBackground(rounded("#4A4846", 12));
 
         int w = Math.max(dp(52), key.getWidth() + dp(12));
         int h = dp(62);
@@ -74,7 +74,7 @@ public final class KeyPopups {
         strip.setOrientation(LinearLayout.HORIZONTAL);
         strip.setGravity(Gravity.CENTER);
         strip.setPadding(dp(4), dp(4), dp(4), dp(4));
-        strip.setBackground(rounded("#2A2D34", 12));
+        strip.setBackground(rounded("#2F2E2C", 14));
 
         int cell = dp(40);
         for (String a : alts) {
@@ -138,7 +138,7 @@ public final class KeyPopups {
         if (idx == selected) return;
         selected = idx;
         for (int i = 0; i < altViews.size(); i++) {
-            altViews.get(i).setBackground(i == idx ? rounded("#4C8BF5", 8) : null);
+            altViews.get(i).setBackground(i == idx ? rounded("#3E91FF", 10) : null);
         }
     }
 
