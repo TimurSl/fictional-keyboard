@@ -28,8 +28,7 @@ import java.util.Map;
 
 /**
  * The keyboard UI, styled after the Samsung keyboard: a round-button toolbar on top, a
- * permanent number row, symbol hints in the corner of every letter key, and a bottom bar
- * with voice input and a hide button.
+ * permanent number row and symbol hints in the corner of every letter key.
  */
 public class SgaKeyboardView extends LinearLayout {
 
@@ -46,12 +45,8 @@ public class SgaKeyboardView extends LinearLayout {
         /** Currently selected text in the editor, or null. */
         String getSelectedText();
         String getTextBeforeCursor(int n);
-        /** Closes the keyboard (the chevron in the bottom bar). */
-        void onHideKeyboard();
         /** Opens the keyboard settings screen. */
         void onOpenSettings();
-        /** Switches to a voice input method; false when the device has none. */
-        boolean onVoiceInput();
     }
 
     private interface AltListener {
@@ -134,7 +129,7 @@ public class SgaKeyboardView extends LinearLayout {
     };
 
     private static final String[][] RU_ROWS = {
-        {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ"},
+        {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х"},
         {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э"},
         {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю"}
     };
@@ -150,6 +145,13 @@ public class SgaKeyboardView extends LinearLayout {
         {"+", "×", "÷", "=", "/", "_", "<", ">", "[", "]"},
         {"!", "@", "#", "%", "^", "&", "*", "(", ")"},
         {"-", "'", "\"", ":", ";", ",", "?"}
+    };
+
+    /** Russian corner symbols; ё and ъ live on е and ь so the rows stay at 11 keys. */
+    private static final String[][] HINT_ROWS_RU = {
+        {"+", "×", "÷", "=", "ё", "/", "_", "<", ">", "[", "]"},
+        {"!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "~"},
+        {"-", "'", "\"", ":", ";", ",", "ъ", "?", "`"}
     };
 
     private static final String[] DIGITS = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
@@ -187,8 +189,6 @@ public class SgaKeyboardView extends LinearLayout {
         ACCENTS.put("s", new String[]{"ß", "š", "ś"});
         ACCENTS.put("y", new String[]{"ý", "ÿ"});
         ACCENTS.put("z", new String[]{"ž", "ź", "ż"});
-        ACCENTS.put("е", new String[]{"ё"});
-        ACCENTS.put("ь", new String[]{"ъ"});
     }
 
     public SgaKeyboardView(Context context, OnKeyActionListener listener) {
@@ -208,7 +208,6 @@ public class SgaKeyboardView extends LinearLayout {
         initDecodeStrip();
         initKeysContainer();
         renderKeyboard();
-        initBottomBar();
     }
 
     private void restoreState() {
@@ -275,49 +274,9 @@ public class SgaKeyboardView extends LinearLayout {
     private void initKeysContainer() {
         keysContainer = new LinearLayout(getContext());
         keysContainer.setOrientation(VERTICAL);
-        keysContainer.setPadding(dp(4), dp(8), dp(4), 0);
+        keysContainer.setPadding(dp(4), dp(8), dp(4), dp(10));
         keysContainer.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         addView(keysContainer);
-    }
-
-    /** Mic on the left, hide-keyboard chevron on the right, as in the Samsung bottom bar. */
-    private void initBottomBar() {
-        LinearLayout bar = new LinearLayout(getContext());
-        bar.setOrientation(HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, dp(40)));
-
-        bar.addView(bottomIcon(R.drawable.ic_mic, "Voice input", 26f, new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                feedback.key(Feedback.KeyType.SPECIAL);
-                flushComposing();
-                if (listener == null || !listener.onVoiceInput()) {
-                    Toast.makeText(getContext(), "No voice input method available", Toast.LENGTH_SHORT).show();
-                }
-            }
-        }));
-        View gap = new View(getContext());
-        gap.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 48f));
-        bar.addView(gap);
-        bar.addView(bottomIcon(R.drawable.ic_chevron_down, "Hide keyboard", 26f, new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                feedback.key(Feedback.KeyType.SPECIAL);
-                flushComposing();
-                if (listener != null) listener.onHideKeyboard();
-            }
-        }));
-        addView(bar);
-    }
-
-    private View bottomIcon(int iconRes, String description, float sizeDp, OnClickListener click) {
-        FrameLayout cell = new FrameLayout(getContext());
-        cell.setLayoutParams(new LinearLayout.LayoutParams(0, LayoutParams.MATCH_PARENT, 26f));
-        cell.setContentDescription(description);
-        cell.setOnClickListener(click);
-        cell.addView(icon(iconRes, sizeDp));
-        return cell;
     }
 
     private ImageView icon(int res, float sizeDp) {
@@ -650,7 +609,7 @@ public class SgaKeyboardView extends LinearLayout {
             if (currentLayout == LayoutType.SYMBOLS) {
                 renderSymbolsLayout();
             } else if (currentLayout == LayoutType.RU) {
-                renderTextLayout(RU_ROWS, null, null, 21);
+                renderTextLayout(RU_ROWS, null, HINT_ROWS_RU, 21);
             } else if (currentLayout == LayoutType.EN || currentMode.isWordLevel()) {
                 // Word-level modes need real letters, so the SGA glyph layout shows Latin keys.
                 renderTextLayout(EN_ROWS, null, HINT_ROWS, 22);
